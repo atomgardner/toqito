@@ -38,7 +38,7 @@ class ExtendedNonlocalGame:
         :param prob_mat: A matrix whose (x, y)-entry gives the probability
                         that the referee will give Alice the value `x` and Bob
                         the value `y`.
-        :param pred_mat:
+        :param pred_mat: A matrix whose (...)-entry gives ...
         :param reps: Number of parallel repetitions to perform.
         """
         if reps == 1:
@@ -50,10 +50,10 @@ class ExtendedNonlocalGame:
             (
                 dim_x,
                 dim_y,
-                num_alice_out,
-                num_bob_out,
-                num_alice_in,
-                num_bob_in,
+                A,
+                B,
+                X,
+                Y,
             ) = pred_mat.shape
             self.prob_mat = tensor(prob_mat, reps)
 
@@ -61,22 +61,22 @@ class ExtendedNonlocalGame:
                 (
                     dim_x**reps,
                     dim_y**reps,
-                    num_alice_out**reps,
-                    num_bob_out**reps,
-                    num_alice_in**reps,
-                    num_bob_in**reps,
+                    A**reps,
+                    B**reps,
+                    X**reps,
+                    Y**reps,
                 )
             )
             i_ind = np.zeros(reps, dtype=int)
             j_ind = np.zeros(reps, dtype=int)
-            for i in range(num_alice_in**reps):
-                for j in range(num_bob_in**reps):
-                    to_tensor = np.empty([reps, dim_x, dim_y, num_alice_out, num_bob_out])
+            for i in range(X**reps):
+                for j in range(Y**reps):
+                    to_tensor = np.empty([reps, dim_x, dim_y, A, B])
                     for k in range(reps - 1, -1, -1):
                         to_tensor[k] = pred_mat[:, :, :, :, i_ind[k], j_ind[k]]
                     pred_mat2[:, :, :, :, i, j] = tensor(to_tensor)
-                    j_ind = update_odometer(j_ind, num_bob_in * np.ones(reps))
-                i_ind = update_odometer(i_ind, num_alice_in * np.ones(reps))
+                    j_ind = update_odometer(j_ind, Y * np.ones(reps))
+                i_ind = update_odometer(i_ind, X * np.ones(reps))
             self.pred_mat = pred_mat2
             self.reps = reps
 
@@ -100,14 +100,14 @@ class ExtendedNonlocalGame:
 
         :return: The unentangled value of the extended nonlocal game.
         """
-        dim_x, dim_y, alice_out, bob_out, alice_in, bob_in = self.pred_mat.shape
+        dim_x, dim_y, A, B, X, Y = self.pred_mat.shape
 
         max_unent_val = float("-inf")
-        for a_out in range(alice_out):
-            for b_out in range(bob_out):
+        for a_out in range(A):
+            for b_out in range(B):
                 p_win = np.zeros([dim_x, dim_y], dtype=complex)
-                for x_in in range(alice_in):
-                    for y_in in range(bob_in):
+                for x_in in range(X):
+                    for y_in in range(Y):
                         p_win += self.prob_mat[x_in, y_in] * self.pred_mat[:, :, a_out, b_out, x_in, y_in]
 
                 rho = cvxpy.Variable((dim_x, dim_y), hermitian=True)
@@ -156,7 +156,7 @@ class ExtendedNonlocalGame:
 
         :return: The non-signaling value of the extended nonlocal game.
         """
-        dim_x, dim_y, alice_out, bob_out, alice_in, bob_in = self.pred_mat.shape
+        dim_x, dim_y, A, B, X, Y = self.pred_mat.shape
         constraints = []
 
         # The cvxpy package does not support optimizing over more than
@@ -165,36 +165,38 @@ class ExtendedNonlocalGame:
         # this positions are `dim_x`-by-`dim_y` cvxpy Variable objects.
 
         # Define K(a,b|x,y) variable.
-        k_var = defaultdict(cvxpy.Variable)
-        for a_out in range(alice_out):
-            for b_out in range(bob_out):
-                for x_in in range(alice_in):
-                    for y_in in range(bob_in):
-                        k_var[a_out, b_out, x_in, y_in] = cvxpy.Variable((dim_x, dim_y), hermitian=True)
-                        constraints.append(k_var[a_out, b_out, x_in, y_in] >> 0)
+        K = defaultdict(cvxpy.Variable)  # assemblage
+        for a in range(A):
+            for b in range(B):
+                for x in range(X):
+                    for y in range(Y):
+                        K[a, b, x, y] = cvxpy.Variable((dim_x, dim_y), hermitian=True)
+                        constraints.append(K[a, b, x, y] >> 0)
 
         # Define \sigma_a^x variable.
         sigma = defaultdict(cvxpy.Variable)
-        for a_out in range(alice_out):
-            for x_in in range(alice_in):
-                sigma[a_out, x_in] = cvxpy.Variable((dim_x, dim_y), hermitian=True)
+        for a in range(A):
+            for x in range(X):
+                sigma[a, x] = cvxpy.Variable((dim_x, dim_y), hermitian=True)
 
         # Define \rho_b^y variable.
         rho = defaultdict(cvxpy.Variable)
-        for b_out in range(bob_out):
-            for y_in in range(bob_in):
-                rho[b_out, y_in] = cvxpy.Variable((dim_x, dim_y), hermitian=True)
+        for b in range(B):
+            for y in range(Y):
+                rho[b, y] = cvxpy.Variable((dim_x, dim_y), hermitian=True)
 
-        # Define \tau density operator variable.
+        # Define \tau density operator.
         tau = cvxpy.Variable((dim_x, dim_y), hermitian=True)
+        constraints.append(cvxpy.trace(tau) == 1)
+        constraints.append(tau >> 0)
 
         p_win = 0
-        for a_out in range(alice_out):
-            for b_out in range(bob_out):
-                for x_in in range(alice_in):
-                    for y_in in range(bob_in):
-                        p_win += self.prob_mat[x_in, y_in] * cvxpy.trace(
-                            self.pred_mat[:, :, a_out, b_out, x_in, y_in].conj().T @ k_var[a_out, b_out, x_in, y_in]
+        for a in range(A):
+            for b in range(B):
+                for x in range(X):
+                    for y in range(Y):
+                        p_win += self.prob_mat[x, y] * cvxpy.trace(
+                            self.pred_mat[:, :, a, b, x, y].conj().T @ K[a, b, x, y]
                         )
 
         objective = cvxpy.Maximize(cvxpy.real(p_win))
@@ -204,43 +206,39 @@ class ExtendedNonlocalGame:
 
         # Enforce that:
         # \sum_{b \in \Gamma_B} K(a,b|x,y) = \sigma_a^x
-        for x_in in range(alice_in):
-            for y_in in range(bob_in):
-                for a_out in range(alice_out):
+        for x in range(X):
+            for y in range(Y):
+                for a in range(A):
                     b_sum = 0
-                    for b_out in range(bob_out):
-                        b_sum += k_var[a_out, b_out, x_in, y_in]
-                    constraints.append(b_sum == sigma[a_out, x_in])
+                    for b in range(B):
+                        b_sum += K[a, b, x, y]
+                    constraints.append(b_sum == sigma[a, x])
 
         # Enforce non-signaling constraints on Alice marginal:
         # \sum_{a \in \Gamma_A} K(a,b|x,y) = \rho_b^y
-        for x_in in range(alice_in):
-            for y_in in range(bob_in):
-                for b_out in range(bob_out):
+        for x in range(X):
+            for y in range(Y):
+                for b in range(B):
                     a_sum = 0
-                    for a_out in range(alice_out):
-                        a_sum += k_var[a_out, b_out, x_in, y_in]
-                    constraints.append(a_sum == rho[b_out, y_in])
+                    for a in range(A):
+                        a_sum += K[a, b, x, y]
+                    constraints.append(a_sum == rho[b, y])
 
         # Enforce non-signaling constraints on Bob marginal:
         # \sum_{a \in \Gamma_A} \sigma_a^x = \tau
-        for x_in in range(alice_in):
+        for x in range(X):
             sig_a_sum = 0
-            for a_out in range(alice_out):
-                sig_a_sum += sigma[a_out, x_in]
+            for a in range(A):
+                sig_a_sum += sigma[a, x]
             constraints.append(sig_a_sum == tau)
 
         # Enforce that:
         # \sum_{b \in \Gamma_B} \rho_b^y = \tau
-        for y_in in range(bob_in):
+        for y in range(Y):
             rho_b_sum = 0
-            for b_out in range(bob_out):
-                rho_b_sum += rho[b_out, y_in]
+            for b in range(B):
+                rho_b_sum += rho[b, y]
             constraints.append(rho_b_sum == tau)
-
-        # Enforce that tau is a density operator.
-        constraints.append(cvxpy.trace(tau) == 1)
-        constraints.append(tau >> 0)
 
         problem = cvxpy.Problem(objective, constraints)
         ns_val = problem.solve()
@@ -255,18 +253,19 @@ class ExtendedNonlocalGame:
         :return: The quantum value of the extended nonlocal game.
         """
         # Get number of inputs and outputs for Bob's measurements.
-        _, _, _, num_outputs_bob, _, num_inputs_bob = self.pred_mat.shape
+        _, _, _, B, _, Y = self.pred_mat.shape
 
         best_lower_bound = float("-inf")
-        for _ in range(iters):
+        for _ in range(1):
             # Generate a set of random POVMs for Bob. These measurements serve as a
             # rough starting point for the alternating projection algorithm.
             bob_povms = defaultdict(int)
-            for y_ques in range(num_inputs_bob):
-                random_mat = random_unitary(num_outputs_bob)
-                for b_ans in range(num_outputs_bob):
-                    random_mat_trans = random_mat[:, b_ans].conj().T.reshape(-1, 1)
-                    bob_povms[y_ques, b_ans] = random_mat[:, b_ans] * random_mat_trans
+            for y in range(Y):
+                u = random_unitary(B)
+
+                for b in range(B):
+                    ut = u[:, b].conj().T.reshape(-1, 1)
+                    bob_povms[y, b] = u[:, b] * ut
 
             # Run the alternating projection algorithm between the two SDPs.
             it_diff = 1
@@ -277,12 +276,13 @@ class ExtendedNonlocalGame:
                 # If this is the first iteration, then the previously randomly
                 # generated operators in the outer loop are Bob's. Otherwise, Bob's
                 # operators come from running the next SDP.
-                rho, lower_bound = self.__optimize_alice(bob_povms)
-                bob_povms, lower_bound = self.__optimize_bob(rho)
+                rho, lower_bound_a = self.__optimize_alice(bob_povms)
+                bob_povms, lower_bound_b = self.__optimize_bob(rho)
+
+                lower_bound = max(lower_bound_a, lower_bound_b)
 
                 it_diff = lower_bound - prev_win
                 prev_win = lower_bound
-
                 # As the SDPs keep alternating, check if the winning probability
                 # becomes any higher. If so, replace with new best.
                 best = max(best, lower_bound)
@@ -291,16 +291,16 @@ class ExtendedNonlocalGame:
 
         return best_lower_bound
 
-    def __optimize_alice(self, bob_povms) -> tuple[dict, float]:
+    def __optimize_alice(self, povms) -> tuple[dict, float]:
         """Fix Bob's measurements and optimize over Alice's measurements."""
         # Get number of inputs and outputs.
         (
             dim,
             _,
-            num_outputs_alice,
-            num_outputs_bob,
-            num_inputs_alice,
-            num_inputs_bob,
+            A,
+            B,
+            X,
+            Y,
         ) = self.pred_mat.shape
 
         # The cvxpy package does not support optimizing over 4-dimensional objects.
@@ -308,52 +308,34 @@ class ExtendedNonlocalGame:
         # answers, while the cvxpy variables held at this positions are
         # `dim`-by-`dim` cvxpy variables.
         rho = defaultdict(cvxpy.Variable)
-        for x_ques in range(num_inputs_alice):
-            for a_ans in range(num_outputs_alice):
-                rho[x_ques, a_ans] = cvxpy.Variable((dim * num_outputs_bob, dim * num_outputs_bob), hermitian=True)
+        for x, a in np.ndindex((X, A)):
+            rho[x, a] = cvxpy.Variable((dim * B, dim * B), hermitian=True)
 
-        tau = cvxpy.Variable((dim * num_outputs_bob, dim * num_outputs_bob), hermitian=True)
+        tau = cvxpy.Variable((dim * B, dim * B), hermitian=True)
         win = 0
-        for x_ques in range(num_inputs_alice):
-            for y_ques in range(num_inputs_bob):
-                for a_ans in range(num_outputs_alice):
-                    for b_ans in range(num_outputs_bob):
-                        if isinstance(bob_povms[y_ques, b_ans], np.ndarray):
-                            win += self.prob_mat[x_ques, y_ques] * cvxpy.trace(
-                                (
-                                    np.kron(
-                                        self.pred_mat[:, :, a_ans, b_ans, x_ques, y_ques],
-                                        bob_povms[y_ques, b_ans],
-                                    )
-                                )
-                                .conj()
-                                .T
-                                @ rho[x_ques, a_ans]
-                            )
-                        if isinstance(
-                            bob_povms[y_ques, b_ans],
-                            cvxpy.expressions.variable.Variable,
-                        ):
-                            win += self.prob_mat[x_ques, y_ques] * cvxpy.trace(
-                                (
-                                    np.kron(
-                                        self.pred_mat[:, :, a_ans, b_ans, x_ques, y_ques],
-                                        bob_povms[y_ques, b_ans].value,
-                                    )
-                                )
-                                .conj()
-                                .T
-                                @ rho[x_ques, a_ans]
-                            )
+        for x, y, a, b in np.ndindex((X, Y, A, B)):
+            win += self.prob_mat[x, y] * cvxpy.trace(
+                (
+                    np.kron(
+                        self.pred_mat[:, :, a, b, x, y],
+                        povms[y, b] if isinstance(povms[y, b], np.ndarray) else povms[y, b].value,
+                    )
+                )
+                .conj()
+                .T
+                @ rho[x, a]
+            )
+
         objective = cvxpy.Maximize(cvxpy.real(win))
         constraints = []
 
         # Sum over "a" for all "x" for Alice's measurements.
-        for x_ques in range(num_inputs_alice):
+        for x in range(X):
             rho_sum_a = 0
-            for a_ans in range(num_outputs_alice):
-                rho_sum_a += rho[x_ques, a_ans]
-                constraints.append(rho[x_ques, a_ans] >> 0)
+            for a in range(A):
+                rho_sum_a += rho[x, a]
+                constraints.append(rho[x, a] >> 0)
+
             constraints.append(rho_sum_a == tau)
 
         constraints.append(cvxpy.trace(tau) == 1)
@@ -370,10 +352,10 @@ class ExtendedNonlocalGame:
         (
             dim,
             _,
-            num_outputs_alice,
-            num_outputs_bob,
-            num_inputs_alice,
-            num_inputs_bob,
+            A,
+            B,
+            X,
+            Y,
         ) = self.pred_mat.shape
 
         # The cvxpy package does not support optimizing over 4-dimensional objects.
@@ -381,34 +363,30 @@ class ExtendedNonlocalGame:
         # answers, while the cvxpy variables held at this positions are
         # `dim`-by-`dim` cvxpy variables.
         bob_povms = defaultdict(cvxpy.Variable)
-        for y_ques in range(num_inputs_bob):
-            for b_ans in range(num_outputs_bob):
-                bob_povms[y_ques, b_ans] = cvxpy.Variable((dim, dim), hermitian=True)
+        for y, b in np.ndindex((Y, B)):
+            bob_povms[y, b] = cvxpy.Variable((dim, dim), hermitian=True)
         win = 0
-        for x_ques in range(num_inputs_alice):
-            for y_ques in range(num_inputs_bob):
-                for a_ans in range(num_outputs_alice):
-                    for b_ans in range(num_outputs_bob):
-                        win += self.prob_mat[x_ques, y_ques] * cvxpy.trace(
-                            (
-                                cvxpy.kron(
-                                    self.pred_mat[:, :, a_ans, b_ans, x_ques, y_ques],
-                                    bob_povms[y_ques, b_ans],
-                                )
-                            )
-                            @ rho[x_ques, a_ans].value
-                        )
+        for x, y, a, b in np.ndindex((X, Y, A, B)):
+            win += self.prob_mat[x, y] * cvxpy.trace(
+                (
+                    cvxpy.kron(
+                        self.pred_mat[:, :, a, b, x, y],
+                        bob_povms[y, b],
+                    )
+                )
+                @ rho[x, a].value
+            )
         objective = cvxpy.Maximize(cvxpy.real(win))
 
         constraints = []
 
         # Sum over "b" for all "y" for Bob's measurements.
-        for y_ques in range(num_inputs_bob):
+        for y in range(Y):
             bob_sum_b = 0
-            for b_ans in range(num_outputs_bob):
-                bob_sum_b += bob_povms[y_ques, b_ans]
-                constraints.append(bob_povms[y_ques, b_ans] >> 0)
-            constraints.append(bob_sum_b == np.identity(num_outputs_bob))
+            for b in range(B):
+                bob_sum_b += bob_povms[y, b]
+                constraints.append(bob_povms[y, b] >> 0)
+            constraints.append(bob_sum_b == np.identity(B))
 
         problem = cvxpy.Problem(objective, constraints)
 
@@ -437,33 +415,26 @@ class ExtendedNonlocalGame:
         :return: The upper bound on the commuting strategy value of an extended nonlocal game.
 
         """
-        referee_dim, _, alice_out, bob_out, alice_in, bob_in = self.pred_mat.shape
+        m, _, A, B, X, Y = self.pred_mat.shape
 
-        mat = defaultdict(cvxpy.Variable)
-        for x_in in range(alice_in):
-            for y_in in range(bob_in):
-                mat[x_in, y_in] = cvxpy.Variable(
-                    (alice_out * referee_dim, bob_out * referee_dim),
-                    name=f"K(a, b | {x_in}, {y_in})",
-                    hermitian=True,
-                )
+        # Our pseudo commuting measurement assemblage.
+        K = defaultdict(cvxpy.Variable)
+        for x, y in np.ndindex((X, Y)):
+            K[x, y] = cvxpy.Variable(
+                (m * A, m * B),
+                name=f"K(A, B | {x}, {y})",
+                hermitian=True,
+            )
 
-        p_win = cvxpy.Constant(0)
-        for a_out in range(alice_out):
-            for b_out in range(bob_out):
-                for x_in in range(alice_in):
-                    for y_in in range(bob_in):
-                        p_win += self.prob_mat[x_in, y_in] * cvxpy.trace(
-                            self.pred_mat[:, :, a_out, b_out, x_in, y_in].conj().T
-                            @ mat[x_in, y_in][
-                                a_out * referee_dim : (a_out + 1) * referee_dim,
-                                b_out * referee_dim : (b_out + 1) * referee_dim,
-                            ]
-                        )
+        # omega = max_{K} \sum_{ABXY} \pi(x,y) <V, K>
+        omega = cvxpy.Constant(0)
+        for a, b, x, y in np.ndindex((A, B, X, Y)):
+            omega += self.prob_mat[x, y] * cvxpy.trace(
+                self.pred_mat[:, :, a, b, x, y].conj().T
+                @ K[x, y][
+                    a * m : (a + 1) * m,
+                    b * m : (b + 1) * m,
+                ]
+            )
 
-        npa = npa_constraints(mat, k, referee_dim)
-        objective = cvxpy.Maximize(cvxpy.real(p_win))
-        problem = cvxpy.Problem(objective, npa)
-        cs_val = problem.solve()
-
-        return cs_val
+        return cvxpy.Problem(cvxpy.Maximize(cvxpy.real(omega)), npa_constraints(K, k, m)).solve()
